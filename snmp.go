@@ -2,11 +2,11 @@
 package snmp
 
 import (
-	"net"
-	"math/rand"
-	"time"
-	"fmt"
 	"bytes"
+	"fmt"
+	"math/rand"
+	"net"
+	"time"
 
 	"github.com/masiulaniec/snmp/asn1"
 	"github.com/masiulaniec/snmp/mib"
@@ -18,33 +18,33 @@ func init() {
 	rand.Seed(time.Now().UnixNano())
 	go func() {
 		for {
-			nextID <-rand.Int31()
+			nextID <- rand.Int31()
 		}
 	}()
 }
 
 type Request struct {
-	Host string // host or host:port
-	Type string // One of: Get.  Default: Get.
-	OID string // Numeric or textual.
+	Host      string // host or host:port
+	Type      string // One of: Get.  Default: Get.
+	OID       string // Numeric or textual.
 	Community string
 }
 
 type message struct {
-	Version int
+	Version   int
 	Community []byte
-	Data interface{}
+	Data      interface{}
 }
 
 type pdu struct {
-	RequestID int32
+	RequestID   int32
 	ErrorStatus int
-	ErrorIndex int
-	Bindings []varBind
+	ErrorIndex  int
+	Bindings    []varBind
 }
 
 type varBind struct {
-	OID asn1.ObjectIdentifier
+	OID   asn1.ObjectIdentifier
 	Value interface{} // asn1.RawValue?
 }
 
@@ -62,9 +62,9 @@ func Get(v interface{}, req *Request) (err error) {
 	Community := req.Community
 	RequestID := <-nextID
 	var request struct {
-		Version int
+		Version   int
 		Community []byte
-		Data pdu `asn1:"application,tag:0"`
+		Data      pdu `asn1:"application,tag:0"`
 	}
 	request.Version = 1
 	request.Community = []byte(Community)
@@ -72,7 +72,7 @@ func Get(v interface{}, req *Request) (err error) {
 		RequestID: RequestID,
 		Bindings: []varBind{
 			{
-				OID: OID,
+				OID:   OID,
 				Value: asn1.Null{},
 			},
 		},
@@ -94,7 +94,7 @@ func Get(v interface{}, req *Request) (err error) {
 	if err != nil {
 		return
 	}
-	if err = conn.SetReadDeadline(time.Now().Add(1*time.Second)); err != nil {
+	if err = conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
 		return
 	}
 	defer conn.Close()
@@ -108,9 +108,9 @@ func Get(v interface{}, req *Request) (err error) {
 	}
 
 	var response struct {
-		Version int
+		Version   int
 		Community []byte
-		Data pdu `asn1:"tag:2"`
+		Data      pdu `asn1:"tag:2"`
 	}
 	rest, err := asn1.Unmarshal(buf[:n], &response)
 	if err != nil {

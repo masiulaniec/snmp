@@ -1,6 +1,7 @@
 package mib
 
-import (	"os"
+import (
+	"os"
 	"strings"
 	"testing"
 

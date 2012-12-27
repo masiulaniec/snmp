@@ -463,7 +463,7 @@ func parseSequenceOf(bytes []byte, sliceType reflect.Type, elemType reflect.Type
 var (
 	bitStringType        = reflect.TypeOf(BitString{})
 	objectIdentifierType = reflect.TypeOf(ObjectIdentifier{})
-	nullType = reflect.TypeOf(Null{})
+	nullType             = reflect.TypeOf(Null{})
 	enumeratedType       = reflect.TypeOf(Enumerated(0))
 	flagType             = reflect.TypeOf(Flag(false))
 	timeType             = reflect.TypeOf(time.Time{})
