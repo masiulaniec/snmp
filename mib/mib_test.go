@@ -1,10 +1,10 @@
 package mib
 
-import (
-	"encoding/asn1"
-	"os"
+import (	"os"
 	"strings"
 	"testing"
+
+	"github.com/masiulaniec/snmp/asn1"
 )
 
 type LookupTest struct {
@@ -41,6 +41,7 @@ type LookupError struct {
 var lookupErrors = []LookupError{
 	{"", "exit status 2"},
 	{"foo", "exit status 2"},
+	{"sysName.0", "exit status 2"},
 }
 
 func TestLookupErrors(t *testing.T) {
