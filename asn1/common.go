@@ -23,6 +23,7 @@ const (
 	tagInteger         = 2
 	tagBitString       = 3
 	tagOctetString     = 4
+	tagNull = 5
 	tagOID             = 6
 	tagEnum            = 10
 	tagUTF8String      = 12
@@ -134,6 +135,8 @@ func getUniversalType(t reflect.Type) (tagNumber int, isCompound, ok bool) {
 		return tagBitString, false, true
 	case timeType:
 		return tagUTCTime, false, true
+	case nullType:
+		return tagNull, false, true
 	case enumeratedType:
 		return tagEnum, false, true
 	case bigIntType:

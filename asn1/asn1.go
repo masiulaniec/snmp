@@ -166,6 +166,11 @@ func parseBitString(bytes []byte) (ret BitString, err error) {
 	return
 }
 
+// NULL
+
+// A Null represents no value.
+type Null struct{}
+
 // OBJECT IDENTIFIER
 
 // An ObjectIdentifier represents an ASN.1 OBJECT IDENTIFIER.
@@ -458,6 +463,7 @@ func parseSequenceOf(bytes []byte, sliceType reflect.Type, elemType reflect.Type
 var (
 	bitStringType        = reflect.TypeOf(BitString{})
 	objectIdentifierType = reflect.TypeOf(ObjectIdentifier{})
+	nullType = reflect.TypeOf(Null{})
 	enumeratedType       = reflect.TypeOf(Enumerated(0))
 	flagType             = reflect.TypeOf(Flag(false))
 	timeType             = reflect.TypeOf(time.Time{})
@@ -804,6 +810,8 @@ func setDefaultValue(v reflect.Value, params fieldParameters) (ok bool) {
 // An ASN.1 BIT STRING can be written to a BitString.
 //
 // An ASN.1 OCTET STRING can be written to a []byte.
+//
+// An ASN.1 NULL can be represented as a Null.
 //
 // An ASN.1 OBJECT IDENTIFIER can be written to an
 // ObjectIdentifier.
