@@ -1,4 +1,4 @@
-// Package mib queries SNMP management database modules.
+// Package mib parses modules of the virtual management information store.
 package mib
 
 import (
