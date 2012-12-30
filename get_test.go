@@ -2,6 +2,7 @@ package snmp
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -9,6 +10,7 @@ type GetTest struct {
 	oid    string
 	expect interface{}
 }
+
 var getTests = []GetTest{
 	{stringType, []byte(nil)},
 	{oidType, []int(nil)},
@@ -47,13 +49,9 @@ func TestHostPort(t *testing.T) {
 	var want string
 	for i, host := range hostTests {
 		var v []byte
-		err := Get(&v, &Request{
-			Host:      host,
-			OID:       stringType,
-			Community: "public",
-		})
-		if err != nil {
+		if err := Get(host, "public", stringType, &v); err != nil {
 			t.Errorf("%s unexpected error: %v", host, err)
+			continue
 		}
 		if have := string(v); i == 0 {
 			want = have
@@ -82,18 +80,14 @@ func TestCommunity(t *testing.T) {
 		test := test
 		go func() {
 			var v interface{}
-			test.err = Get(&v, &Request{
-				Host:      "localhost",
-				OID:       stringType,
-				Community: str,
-			})
+			test.err = Get("localhost", str, stringType, &v)
 			ch <- test
 		}()
 	}
 	for _ = range communityTests {
 		test := <-ch
 		if (test.err == nil) != test.ok {
-			t.Errorf("%s invalid reaction, err=%s", test.str, test.err)
+			t.Errorf("%s invalid err: %s", test.str, test.err)
 		}
 	}
 }
@@ -108,12 +102,7 @@ func TestParallel(t *testing.T) {
 	for i := 0; i < N; i++ {
 		go func() {
 			var v interface{}
-			err := Get(&v, &Request{
-				Host:      "localhost",
-				OID:       stringType,
-				Community: "public",
-			})
-			if err != nil {
+			if err := Get("localhost", "public", stringType, &v); err != nil {
 				t.Errorf("%d unexpected error: %v", i, err)
 			}
 			done <- true
@@ -121,5 +110,34 @@ func TestParallel(t *testing.T) {
 	}
 	for i := 0; i < N; i++ {
 		<-done
+	}
+}
+
+type MultiTest struct {
+	args   []interface{}
+	expect string
+}
+
+var outInt int
+
+var multiTests = []MultiTest{
+	{[]interface{}{}, ""},
+	{[]interface{}{"IF-MIB::ifMtu.1", &outInt}, ""},
+	{[]interface{}{"IF-MIB::ifMtu.1", &outInt, "IF-MIB::ifSpeed.1", &outInt}, ""},
+}
+
+func TestGetMulti(t *testing.T) {
+	for _, test := range multiTests {
+		err := Get("localhost", "public", test.args...)
+		if (test.expect == "") != (err == nil) {
+			t.Errorf("%v: unexpected error: %v", test.args, err)
+			continue
+		}
+		if err == nil {
+			continue
+		}
+		if i := strings.Index(err.Error(), test.expect); i < 0 {
+			t.Errorf("%v: unexpected error: %v", test.args, err)
+		}
 	}
 }
