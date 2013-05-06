@@ -130,7 +130,7 @@ func (a Binding) less(b Binding) bool {
 // A Request represents an SNMP request to be sent over a Transport.
 type Request struct {
 	ID             int32
-	Type           string // "Get", "GetNext"
+	Type           string // "Get", "GetNext", "GetBulk"
 	Bindings       []Binding
 	NonRepeaters   int
 	MaxRepetitions int
