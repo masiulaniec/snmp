@@ -6,19 +6,22 @@ import (
 	"github.com/masiulaniec/snmp/mib"
 )
 
-// Get retrieves object referenced by (name, value) pairs.
+// Get retrieves an object by its name.  Nameval is a pair of: object
+// name (string), and the corresponding target value (pointer to int,
+// string, etc.). To retrieve multiple objects in a single transaction,
+// provide multiple name, value pairs.
 func Get(host, community string, nameval ...interface{}) error {
 	switch n := len(nameval); {
 	case n == 0:
 		return nil
 	case n%2 == 1:
-		panic("snmp.Get: odd nameval count")
+		panic("snmp.Get: odd-sized nameval")
 	}
 	bindings, err := fromPairs(nameval)
 	if err != nil {
 		return err
 	}
-	tr, err := getTransport(host, community)
+	tr, err := newTransport(host, community)
 	if err != nil {
 		return err
 	}
@@ -36,7 +39,8 @@ func Get(host, community string, nameval ...interface{}) error {
 	}
 	for i, b := range resp.Bindings {
 		if have, want := b.Name, req.Bindings[i].Name; !have.Equal(want) {
-			return fmt.Errorf("snmp: %s: get %s: invalid response: name mismatch", host, want)
+			return fmt.Errorf("snmp: %s: get %s: invalid response: name mismatch",
+				host, want)
 		}
 		v := nameval[2*i+1]
 		if err := b.unmarshal(v); err != nil {
@@ -46,7 +50,7 @@ func Get(host, community string, nameval ...interface{}) error {
 	return nil
 }
 
-// fromPairs creates bindings and from the (name, value) pairs.
+// fromPairs creates bindings from the (name, value) pairs.
 func fromPairs(nameval []interface{}) ([]Binding, error) {
 	var bindings []Binding
 	for i := 0; i < len(nameval); i += 2 {

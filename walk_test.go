@@ -1,7 +1,11 @@
+// +build ignore
+
 package snmp
 
 import (
+	_ "fmt"
 	"testing"
+	_ "time"
 )
 
 func TestWalk(t *testing.T) {

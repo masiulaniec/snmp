@@ -9,6 +9,7 @@ import (
 	"time"
 )
 
+// Reserved binding values.
 var (
 	null           = asn1.RawValue{Class: 0, Tag: 5}
 	noSuchObject   = asn1.RawValue{Class: 2, Tag: 0}
@@ -16,14 +17,15 @@ var (
 	endOfMibView   = asn1.RawValue{Class: 2, Tag: 2}
 )
 
-// Binding represents an assignemnt to a variable, a.k.a. managed object.
+// Binding represents an assignment to a variable, a.k.a. managed object.
 type Binding struct {
 	Name  asn1.ObjectIdentifier
 	Value asn1.RawValue
 }
 
+// unmarshal stores in v the value part of binding b.
 func (b *Binding) unmarshal(v interface{}) error {
-	convertType(&b.Value)
+	convertClass(&b.Value)
 	_, err := asn1.Unmarshal(b.Value.FullBytes, v)
 	if err != nil {
 		if _, ok := err.(asn1.StructuralError); ok {
@@ -32,12 +34,14 @@ func (b *Binding) unmarshal(v interface{}) error {
 		}
 		return err
 	}
+	v = convertType(v)
 	return nil
 }
 
-// convertType enables parsing of SNMP's custom types using the standard
-// encoding/asn1 package.
-func convertType(v *asn1.RawValue) {
+// convertClass converts the encoding of values in SNMP response from
+// "custom" class to the corresponding "universal" class, thus enabling
+// use of the asn1 parser from the encoding/asn1 package.
+func convertClass(v *asn1.RawValue) {
 	if v.Class != 1 {
 		// Not a custom type.
 		return
@@ -60,12 +64,79 @@ func convertType(v *asn1.RawValue) {
 	}
 }
 
-type Request struct {
-	ID       int32
-	Type     string // "Get", "GetNext"
-	Bindings []Binding
+// convertType converts value in SNMP response to a Go type that is
+// easier to manipulate.
+func convertType(v interface{}) interface{} {
+	switch v := v.(type) {
+	case []byte:
+		s, ok := toString(v)
+		if !ok {
+			return v
+		}
+		return s
+	default:
+		return v
+	}
+	panic("unreached")
 }
 
+// less checks if a precedes b in the MIB tree.
+func (a Binding) less(b Binding) bool {
+	switch {
+	case len(a.Name) < len(b.Name):
+		for i := 0; i < len(a.Name); i++ {
+			switch {
+			case a.Name[i] < b.Name[i]:
+				return true
+			case a.Name[i] == b.Name[i]:
+				continue
+			case a.Name[i] > b.Name[i]:
+				return false
+			}
+		}
+		return true
+
+	case len(a.Name) == len(b.Name):
+		for i := 0; i < len(a.Name); i++ {
+			switch {
+			case a.Name[i] < b.Name[i]:
+				return true
+			case a.Name[i] == b.Name[i]:
+				continue
+			case a.Name[i] > b.Name[i]:
+				return false
+			}
+		}
+		// Identical, so not less.
+		return false
+
+	case len(a.Name) > len(b.Name):
+		for i := 0; i < len(b.Name); i++ {
+			switch {
+			case a.Name[i] < b.Name[i]:
+				return true
+			case a.Name[i] == b.Name[i]:
+				continue
+			case a.Name[i] > b.Name[i]:
+				return false
+			}
+		}
+		return false
+
+	}
+	panic("unreached")
+}
+
+// A Request represents an SNMP request to be sent by over a Transport.
+type Request struct {
+	ID             int32
+	Type           string // "Get", "GetNext"
+	Bindings       []Binding
+	NonRepeaters   int
+	MaxRepetitions int
+}
+
+// Response represents the response from an SNMP request.
 type Response struct {
 	ID          int32
 	ErrorStatus int
@@ -73,6 +144,10 @@ type Response struct {
 	Bindings    []Binding
 }
 
+// RoundTripper is an interface representing the ability to execute a
+// single SNMP transaction, obtaining the Response for a given Request.
+//
+// A RoundTripper must be safe for concurrent use by multiple goroutines.
 type RoundTripper interface {
 	RoundTrip(*Request) (*Response, error)
 }
@@ -82,7 +157,7 @@ type Transport struct {
 	Community string
 }
 
-func getTransport(host, community string) (*Transport, error) {
+func newTransport(host, community string) (*Transport, error) {
 	hostport := host
 	if _, _, err := net.SplitHostPort(hostport); err != nil {
 		hostport = host + ":161"
@@ -98,6 +173,8 @@ func getTransport(host, community string) (*Transport, error) {
 	return &Transport{conn, community}, nil
 }
 
+// Transport is an implementation of RoundTripper that supports SNMPv2
+// as defined by RFC 3416.
 func (tr *Transport) RoundTrip(req *Request) (*Response, error) {
 	for i := range req.Bindings {
 		req.Bindings[i].Value = null
@@ -137,6 +214,24 @@ func (tr *Transport) RoundTrip(req *Request) (*Response, error) {
 		p.Data.RequestID = req.ID
 		p.Data.Bindings = req.Bindings
 		buf, err = asn1.Marshal(p)
+	case "GetBulk":
+		var p struct {
+			Version   int
+			Community []byte
+			Data      struct {
+				RequestID      int32
+				NonRepeaters   int
+				MaxRepetitions int
+				Bindings       []Binding
+			} `asn1:"application,tag:5"`
+		}
+		p.Version = 1
+		p.Community = []byte(tr.Community)
+		p.Data.RequestID = req.ID
+		p.Data.NonRepeaters = 0
+		p.Data.MaxRepetitions = req.MaxRepetitions
+		p.Data.Bindings = req.Bindings
+		buf, err = asn1.Marshal(p)
 	default:
 		panic("unsupported type " + req.Type)
 	}
@@ -146,8 +241,8 @@ func (tr *Transport) RoundTrip(req *Request) (*Response, error) {
 	if _, err := tr.Conn.Write(buf); err != nil {
 		return nil, err
 	}
-	buf = make([]byte, 2048, 2048)
-	if err := tr.Conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+	buf = make([]byte, 10000, 10000)
+	if err := tr.Conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		return nil, err
 	}
 	n, err := tr.Conn.Read(buf)
@@ -170,9 +265,12 @@ func (tr *Transport) RoundTrip(req *Request) (*Response, error) {
 	if _, err = asn1.Unmarshal(buf[:n], &p); err != nil {
 		return nil, err
 	}
-	return &Response{p.Data.RequestID, p.Data.ErrorStatus, p.Data.ErrorIndex, p.Data.Bindings}, nil
+	resp := &Response{p.Data.RequestID, p.Data.ErrorStatus, p.Data.ErrorIndex, p.Data.Bindings}
+	return resp, nil
 }
 
+// check checks the response PDU for basic correctness.
+// Valid with all PDU types.
 func check(resp *Response, req *Request) (err error) {
 	defer func() {
 		if err != nil {
@@ -185,9 +283,9 @@ func check(resp *Response, req *Request) (err error) {
 	}
 
 	if e, i := resp.ErrorStatus, resp.ErrorIndex; e != 0 {
-		err := fmt.Errorf("server error %v", e)
+		err := fmt.Errorf("server error: %v", errorStatus(e))
 		if i >= 0 && i < len(resp.Bindings) {
-			err = fmt.Errorf("%v: binding %+v", err, resp.Bindings[i])
+			err = fmt.Errorf("binding %+v: %v", req.Bindings[i], err)
 		}
 		return err
 	}
@@ -197,7 +295,7 @@ func check(resp *Response, req *Request) (err error) {
 		return fmt.Errorf("no bindings")
 	case n < len(req.Bindings):
 		return fmt.Errorf("missing bindings")
-	case n > len(req.Bindings):
+	case n > len(req.Bindings) && req.Type != "GetBulk":
 		return fmt.Errorf("extraneous bindings")
 	}
 
@@ -215,11 +313,16 @@ func check(resp *Response, req *Request) (err error) {
 		case eq(v, null):
 			return fmt.Errorf("%v: unexpected null", b.Name)
 		}
+		if !hasPrefix(b.Name, []int{1, 3}) {
+			return fmt.Errorf("%v: missing [1 3] prefix", b.Name)
+		}
 	}
 
 	return nil
 }
 
+// hasPrefix tests if given object instance id falls within the mib subtree
+// defined by the prefix.
 func hasPrefix(instance, prefix []int) bool {
 	if len(instance) < len(prefix) {
 		return false
@@ -232,27 +335,81 @@ func hasPrefix(instance, prefix []int) bool {
 	return true
 }
 
-// noError(0),
-// tooBig(1),
-// noSuchName(2),      -- for proxy compatibility
-// badValue(3),        -- for proxy compatibility
-// readOnly(4),        -- for proxy compatibility
-// genErr(5),
-// noAccess(6),
-// wrongType(7),
-// wrongLength(8),
-// wrongEncoding(9),
-// wrongValue(10),
-// noCreation(11),
-// inconsistentValue(12),
-// resourceUnavailable(13),
-// commitFailed(14),
-// undoFailed(15),
-// authorizationError(16),
-// notWritable(17),
-// inconsistentName(18)
+// errorText is the set of response errors specified in RFC 3416.
+var errorText = map[errorStatus]string{
+	0:  "no error",
+	1:  "too big",
+	2:  "no such name",
+	3:  "bad value",
+	4:  "read only",
+	5:  "gen err",
+	6:  "no access",
+	7:  "wrong type",
+	8:  "wrong length",
+	9:  "wrong encoding",
+	10: "wrong value",
+	11: "no creation",
+	12: "inconsistent value",
+	13: "resource unavailable",
+	14: "commit failed",
+	15: "undo failed",
+	16: "authorization error",
+	17: "not writable",
+	18: "inconsistent name",
+}
 
-// nextID generates random request IDs.
+// errorStatus represents response error code.
+type errorStatus int
+
+// String returns the text form of error e.
+func (e errorStatus) String() string {
+	s := errorText[e]
+	if s == "" {
+		s = fmt.Sprintf("code %d", e)
+	}
+	return s
+}
+
+// toString attempts to convert a byte string to ascii string of
+// printable characters.
+func toString(x []byte) (string, bool) {
+	if len(x) == 0 {
+		return "", false
+	}
+	if int(x[0]) != len(x[1:]) {
+		return "", false
+	}
+	buf := make([]byte, len(x[1:]))
+	for i, c := range x[1:] {
+		if c < 0x20 || c > 0x7e {
+			return "", false
+		}
+		buf[i] = byte(c)
+	}
+	return string(buf), true
+}
+
+// toStringInt attempts to convert an int string to ascii string of
+// printable characters.
+func toStringInt(x []int) (string, bool) {
+	if len(x) == 0 {
+		return "", false
+	}
+	if int(x[0]) != len(x[1:]) {
+		return "", false
+	}
+	buf := make([]byte, len(x[1:]))
+	for i, c := range x[1:] {
+		if c < 0x20 || c > 0x7e {
+			return "", false
+		}
+		buf[i] = byte(c)
+	}
+	return string(buf), true
+}
+
+// nextID generates random request IDs. Randomness prevents eavesdroppers
+// from inferring application startup time.
 var nextID = make(chan int32)
 
 func init() {

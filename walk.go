@@ -21,142 +21,222 @@ import (
 //     err = rows.Err() // get any error encountered during iteration
 //     ...
 type Rows struct {
-	row       *row
+	avail     []row
+	last      row
+	walkFn    walkFunc
+	headText  []string
+	head      []asn1.ObjectIdentifier
 	Transport RoundTripper
+	host      string
 	err       error
 }
 
-func Walk(host, community string, oids ...string) (*Rows, error) {
-	tr, err := getTransport(host, community)
-	if err != nil {
-		return nil, err
-	}
-	row, err := newRow(oids...)
-	if err != nil {
-		return nil, err
-	}
-	return &Rows{row: row, Transport: tr}, nil
+// row represents individual row.
+type row struct {
+	instance []int
+	bindings []Binding
 }
 
-func (rows *Rows) Next() bool {
-	if rows.err != nil || rows.row == nil {
-		return false
+// Walk executes a query against host authenticated by the community string,
+// retrieving the MIB sub-tree defined by the the given root oids.
+func Walk(host, community string, oids ...string) (*Rows, error) {
+	tr, err := newTransport(host, community)
+	if err != nil {
+		return nil, err
 	}
-	if err := rows.row.next(rows.Transport); err != nil {
-		if err == io.EOF {
-			rows.row = nil
-		} else {
-			rows.err = err
+	rows := &Rows{
+		avail:     nil,
+		walkFn:    walkN,
+		headText:  oids,
+		head:      lookup(oids...),
+		Transport: tr,
+		host:      host,
+	}
+	for _, oid := range rows.head {
+		rows.last.bindings = append(rows.last.bindings, Binding{Name: oid})
+	}
+	return rows, nil
+}
+
+// Next prepares the next result row for reading with the Scan method.
+// It returns true on success, false if there is no next result row.
+// Every call to Scan, even the first one, must be preceded by a call
+// to Next.
+func (rows *Rows) Next() bool {
+	if len(rows.avail) > 0 {
+		return true
+	}
+
+	if rows.err != nil {
+		if rows.err == io.EOF {
+			rows.err = nil
 		}
 		return false
 	}
-	return true
+
+	row, err := rows.walkFn(rows.last.bindings, rows.Transport)
+	if err != nil {
+		if err == io.EOF {
+			rows.err = err
+		} else {
+			rows.err = fmt.Errorf("snmp.Walk: %s: %v", rows.host, err)
+		}
+		return false
+	}
+	rows.avail = row
+
+	for i, r := range rows.avail {
+		eof := 0
+		for i, b := range r.bindings {
+			if !hasPrefix(b.Name, rows.head[i]) {
+				eof++
+			}
+		}
+		if eof > 0 {
+			if eof < len(r.bindings) {
+				rows.err = fmt.Errorf("invalid response: pre-mature end of a column")
+				return false
+			}
+			rows.avail = rows.avail[:i]
+			rows.err = io.EOF
+			break
+		}
+	}
+
+	return len(rows.avail) > 0
 }
 
-func (rows *Rows) Scan(v ...interface{}) (interface{}, error) {
-	if len(v) != len(rows.row.bindings) {
-		panic("Scan: invalid argument count")
+// Scan copies the columns in the current row into the values pointed at by v.
+// On success, the id return variable will hold the row id of the current row.
+// It is typically an integer or a string.
+func (rows *Rows) Scan(v ...interface{}) (id interface{}, err error) {
+	if len(v) != len(rows.last.bindings) {
+		panic("snmp.Scan: invalid argument count")
 	}
-	for i, b := range rows.row.bindings {
+
+	cur := rows.avail[0]
+	rows.avail = rows.avail[1:]
+
+	last := rows.last
+	rows.last = cur
+
+	for i, a := range last.bindings {
+		b := cur.bindings[i]
+		if !a.less(b) {
+			return nil, fmt.Errorf("invalid response: %v: unordered binding: req=%+v >= resp=%+v",
+				rows.headText[i], a.Name, b.Name)
+		}
+	}
+
+	for i, b := range cur.bindings {
 		if err := b.unmarshal(v[i]); err != nil {
 			return nil, err
 		}
 	}
-	return rows.row.instance, nil
+
+	var want []int
+	for i, b := range cur.bindings {
+		offset := len(rows.head[i])
+		// BUG: out of bounds access
+		have := b.Name[offset:]
+		if i == 0 {
+			want = have
+			continue
+		}
+		if len(have) != len(want) || !hasPrefix(have, want) {
+			return nil, fmt.Errorf("invalid response: inconsistent instances")
+		}
+	}
+	id = convertInstance(want)
+
+	return id, nil
 }
 
+// convertInstance optionally converts the object instance id from the
+// general []byte form to simplified form: either a simple int, or a
+// string.
+func convertInstance(x []int) interface{} {
+	switch {
+	case len(x) == 1:
+		return x[0]
+	default:
+		s, ok := toStringInt(x)
+		if !ok {
+			return x
+		}
+		return s
+	}
+	panic("unreached")
+}
+
+// Err returns the error, if any, that was encountered during iteration.
 func (rows *Rows) Err() error {
 	return rows.err
 }
 
-type row struct {
-	// last fetched row
-	instance []int
-	bindings []Binding
+// walkFunc is a function that can request one or more rows.
+type walkFunc func([]Binding, RoundTripper) ([]row, error)
 
-	// the column names
-	head []asn1.ObjectIdentifier
-}
-
-func newRow(names ...string) (*row, error) {
-	r := new(row)
-	for _, name := range names {
-		oid, err := mib.Lookup(name)
-		if err != nil {
-			return nil, err
-		}
-		r.head = append(r.head, oid)
-		r.bindings = append(r.bindings, Binding{Name: oid})
-	}
-	if len(r.head) == 0 {
-		panic("no starting oid")
-	}
-	return r, nil
-}
-
-func (r *row) next(tr RoundTripper) error {
+// walk1 requests one row.
+func walk1(have []Binding, tr RoundTripper) ([]row, error) {
 	req := &Request{
 		Type:     "GetNext",
-		Bindings: r.bindings,
 		ID:       <-nextID,
+		Bindings: have,
 	}
 	resp, err := tr.RoundTrip(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := check(resp, req); err != nil {
-		return err
+		return nil, err
 	}
-	if err := r.check(resp); err != nil {
-		return err
-	}
-	if !r.inRange(resp.Bindings) {
-		return io.EOF
-	}
-	r.instance = []int(resp.Bindings[0].Name[len(r.head[0]):])
-	r.bindings = resp.Bindings
-	return nil
+	r := row{bindings: resp.Bindings}
+	return []row{r}, nil
 }
 
-func (r *row) check(resp *Response) (err error) {
-	defer func() {
+// walkN requests a range of rows.
+func walkN(have []Binding, tr RoundTripper) ([]row, error) {
+	req := &Request{
+		Type:           "GetBulk",
+		ID:             <-nextID,
+		Bindings:       have,
+		NonRepeaters:   0,
+		MaxRepetitions: 15,
+	}
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	if err := check(resp, req); err != nil {
+		return nil, err
+	}
+	received := resp.Bindings
+	sent := req.Bindings
+	if len(received)%len(sent) != 0 {
+		return nil, fmt.Errorf("invalid response: truncated bindings list")
+	}
+	var list []row
+	for len(received) > 0 {
+		list = append(list, row{bindings: received[:len(sent)]})
+		received = received[len(sent):]
+	}
+	if len(list) > req.MaxRepetitions {
+		return nil, fmt.Errorf("invalid response: peer violated MaxRepetitions, received %d rows, expected at most %d",
+			len(list), req.MaxRepetitions)
+	}
+	return list, nil
+}
+
+// lookup maps oids in their symbolic format into numeric format.
+func lookup(oids ...string) []asn1.ObjectIdentifier {
+	list := make([]asn1.ObjectIdentifier, 0, len(oids))
+	for _, o := range oids {
+		oid, err := mib.Lookup(o)
 		if err != nil {
-			err = fmt.Errorf("invalid response: %v", err)
+			panic(err)
 		}
-	}()
-
-	var want []int
-	for i, b := range resp.Bindings {
-		instance := []int(b.Name[len(r.head[i]):])
-		if i == 0 {
-			want = instance
-			continue
-		}
-		have := b.Name[len(r.head[i]):]
-		if len(have) != len(want) || !hasPrefix(have, want) {
-			return fmt.Errorf("inconsistent instances")
-		}
+		list = append(list, oid)
 	}
-
-	eof := 0
-	for i, b := range resp.Bindings {
-		if !hasPrefix(b.Name, r.head[i]) {
-			eof++
-		}
-	}
-	if eof > 0 && eof != len(r.head) {
-		return fmt.Errorf("pre-mature end of a column")
-	}
-
-	// TODO: detect non-lexicographic bindings order
-	return nil
-}
-
-func (r *row) inRange(bindings []Binding) bool {
-	for i, b := range bindings {
-		if !hasPrefix(b.Name, r.head[i]) {
-			return false
-		}
-	}
-	return true
+	return list
 }
