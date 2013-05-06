@@ -127,7 +127,7 @@ func (a Binding) less(b Binding) bool {
 	panic("unreached")
 }
 
-// A Request represents an SNMP request to be sent by over a Transport.
+// A Request represents an SNMP request to be sent over a Transport.
 type Request struct {
 	ID             int32
 	Type           string // "Get", "GetNext"
