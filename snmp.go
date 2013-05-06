@@ -1,4 +1,4 @@
-// Package snmp provides an implementation of the SNMP protocol.
+// Package snmp provides an implementation of the SNMP specification.
 package snmp
 
 import (
