@@ -152,6 +152,8 @@ type RoundTripper interface {
 	RoundTrip(*Request) (*Response, error)
 }
 
+// Transport is an implementation of RoundTripper that supports SNMPv2
+// as defined by RFC 3416.
 type Transport struct {
 	Conn      net.Conn
 	Community string
@@ -173,8 +175,7 @@ func newTransport(host, community string) (*Transport, error) {
 	return &Transport{conn, community}, nil
 }
 
-// Transport is an implementation of RoundTripper that supports SNMPv2
-// as defined by RFC 3416.
+// RoundTrip implements the RoundTripper interface.
 func (tr *Transport) RoundTrip(req *Request) (*Response, error) {
 	for i := range req.Bindings {
 		req.Bindings[i].Value = null
