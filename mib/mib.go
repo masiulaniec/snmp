@@ -31,6 +31,12 @@ func Lookup(prefix string) (asn1.ObjectIdentifier, error) {
 		return oid, nil
 	}
 	cache.Unlock()
+	if oid, err := parseOID(prefix); err == nil {
+		cache.Lock()
+		cache.lookup[prefix] = oid
+		cache.Unlock()
+		return oid, nil
+	}
 	cmd := exec.Command(
 		"snmptranslate",
 		"-Le",
