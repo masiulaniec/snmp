@@ -166,7 +166,6 @@ func convertInstance(x []int) interface{} {
 		}
 		return s
 	}
-	panic("unreached")
 }
 
 // Err returns the error, if any, that was encountered during iteration.

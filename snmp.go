@@ -77,7 +77,6 @@ func convertType(v interface{}) interface{} {
 	default:
 		return v
 	}
-	panic("unreached")
 }
 
 // less checks if a precedes b in the MIB tree.
