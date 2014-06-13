@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/masiulaniec/snmp/mib"
+	"github.com/mjibson/snmp/mib"
 )
 
 // Rows is the result of a walk. Its cursor starts before the first
