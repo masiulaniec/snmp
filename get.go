@@ -3,7 +3,7 @@ package snmp
 import (
 	"fmt"
 
-	"github.com/masiulaniec/snmp/mib"
+	"github.com/mjibson/snmp/mib"
 )
 
 // Get retrieves an object by its name.  Nameval is a pair of: object
