@@ -39,7 +39,7 @@ func Get(host, community string, nameval ...interface{}) error {
 	}
 	for i, b := range resp.Bindings {
 		if have, want := b.Name, req.Bindings[i].Name; !have.Equal(want) {
-			return fmt.Errorf("snmp: %s: get %s: invalid response: name mismatch",
+			return fmt.Errorf("snmp: %s: get %v: invalid response: name mismatch",
 				host, want)
 		}
 		v := nameval[2*i+1]
